@@ -1,2 +1,3 @@
 # ParaesophagealHerniaProject
+### Problem description
 A hiatal hernia arises when part of the stomach pushes through the diaphragm resulting in a range of symptoms in patients. A paraesophageal hernia, also known as a rolling hiatal hernia, is when the stomach protrudes the diaphragm and is lateral to the esophagus. Some side effects of these diseases are chest pain, difficulty swallowing, shortness of breath and feeling full quickly after eating. Paraesophageal hernias are not always recommended to be operated on, but once the hernia commences to twist, then physicians recommend exercising it before it leads to bigger problems in the thoracic region. Our task is to computationally determine if a hiatal or paraesophageal hernia occurs by analyzing a 3D CT scan.
