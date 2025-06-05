@@ -1,0 +1,169 @@
+# --- install packages ---
+
+!pip install TotalSegmentator
+!pip install simpleitk pyradiomics xlsxwriter pandas openpyxl matplotlib
+
+# --- import ---
+
+import numpy as np
+import pandas as pd
+import SimpleITK as sitk
+import matplotlib.pyplot as plt
+from totalsegmentator.python_api import totalsegmentator
+import os
+import logging
+from radiomics import featureextractor
+
+# --- Directory ---
+
+#input path for CT images folder
+CT_dir = "/content/drive/MyDrive/CT/"
+
+#output path for segmentation folder
+seg_dir = "/content/drive/MyDrive/seg/"
+
+#output path for dataframe associating organs with inferior and superior vertebrae
+output_csv = '/content/drive/MyDrive/organ_vertebrae_summary.csv'
+
+#output path for histogram of organ distribution folder
+histogram_dir = '/content/drive/MyDrive/histogram/'
+
+#  --- Segmentation ---
+
+def segment_all_scans(input_dir, output_base):
+    # Automatically detect .nii.gz scan files
+    scan_files = sorted([f for f in os.listdir(input_dir) if f.endswith('.nii.gz')])
+
+    for scan_file in scan_files:
+        scan_id = os.path.splitext(os.path.splitext(scan_file)[0])[0]  # strip .nii.gz
+        input_image = os.path.join(input_dir, scan_file)
+        output_dir = os.path.join(output_base, scan_id)
+
+        print(f"Segmenting {input_image} -> {output_dir}...")
+
+        totalsegmentator(
+            input=input_image,
+            output=output_dir,
+            task='total',
+            fast=False,
+            ml=True,
+            roi_subset=[
+                'spleen', 'stomach', 'esophagus', 'liver',
+                'vertebrae_S1', 'vertebrae_L5', 'vertebrae_L4', 'vertebrae_L3', 'vertebrae_L2', 'vertebrae_L1',
+                'vertebrae_T12', 'vertebrae_T11', 'vertebrae_T10', 'vertebrae_T9', 'vertebrae_T8', 'vertebrae_T7',
+                'vertebrae_T6', 'vertebrae_T5', 'vertebrae_T4', 'vertebrae_T3', 'vertebrae_T2', 'vertebrae_T1',
+                'vertebrae_C7', 'vertebrae_C6', 'vertebrae_C5', 'vertebrae_C4', 'vertebrae_C3', 'vertebrae_C2', 'vertebrae_C1'
+            ]
+        )
+
+    print("✅ Segmentation for all scans completed.")
+# Example usage
+segment_all_scans(CT_dir, seg_dir)
+
+# --- anatomical labels ---
+LABELS = {
+    'Spleen': 1, 'Stomach': 6, 'Esophagus': 15, 'Liver': 5,
+    'Vertebrae_S1': 26, 'Vertebrae_L5': 27, 'Vertebrae_L4': 28, 'Vertebrae_L3': 29, 'Vertebrae_L2': 30, 'Vertebrae_L1': 31,
+    'Vertebrae_T12': 32, 'Vertebrae_T11': 33, 'Vertebrae_T10': 34, 'Vertebrae_T9': 35, 'Vertebrae_T8': 36, 'Vertebrae_T7': 37,
+    'Vertebrae_T6': 38, 'Vertebrae_T5': 39, 'Vertebrae_T4': 40, 'Vertebrae_T3': 41, 'Vertebrae_T2': 42, 'Vertebrae_T1': 43,
+    'Vertebrae_C7': 44, 'Vertebrae_C6': 45, 'Vertebrae_C5': 46, 'Vertebrae_C4': 47, 'Vertebrae_C3': 48, 'Vertebrae_C2': 49, 'Vertebrae_C1': 50,
+}
+vertebrae_labels = [name for name in LABELS if name.startswith("Vertebrae")]
+
+# --- helper functions ---
+def compute_physical_z_com(image, label):
+    stats = sitk.LabelShapeStatisticsImageFilter()
+    stats.Execute(image)
+    return stats.GetCentroid(label)[2] if stats.HasLabel(label) else None
+
+def get_slice_index_from_physical_z(physical_z, image):
+    origin = image.GetOrigin()
+    spacing = image.GetSpacing()
+    direction = image.GetDirection()
+    return int(round((physical_z - origin[2]) / (spacing[2] * direction[8])))
+
+def find_first_last_slice(seg_array, label_value):
+    z_indices = np.where(np.any(seg_array == label_value, axis=(1, 2)))[0]
+    return (int(z_indices[0]), int(z_indices[-1])) if len(z_indices) else (None, None)
+
+# --- main processing loop ---
+summary = []
+
+scan_files = sorted([f for f in os.listdir(seg_dir) if f.endswith('.nii')])
+
+for scan_file in scan_files:
+    i = os.path.splitext(scan_file)[0]  # Extract scan ID
+    seg_path = os.path.join(seg_dir, scan_file)
+    seg_img = sitk.ReadImage(seg_path)
+    seg_arr = sitk.GetArrayFromImage(seg_img)
+    total_slices = seg_arr.shape[0]
+
+    # Compute vertebrae COM slice indices
+    vertebrae_slices = {}
+    for name in vertebrae_labels:
+        label = LABELS[name]
+        binary_img = sitk.BinaryThreshold(seg_img, label, label, insideValue=1, outsideValue=0)
+        z_physical = compute_physical_z_com(binary_img, 1)
+        if z_physical is not None:
+            vertebrae_slices[name] = get_slice_index_from_physical_z(z_physical, seg_img)
+
+    # Map organ slice bounds to closest vertebrae
+    organ_data = {}
+    for organ in ['Stomach', 'Spleen', 'Liver', 'Esophagus']:
+        first, last = find_first_last_slice(seg_arr, LABELS[organ])
+        organ_data[f'{organ.lower()}_first_slice'] = first
+        organ_data[f'{organ.lower()}_last_slice'] = last
+
+        if first is not None and first > 1:
+            organ_data[f'{organ.lower()}_bottom_vertebra'] = min(vertebrae_slices, key=lambda k: abs(vertebrae_slices[k] - first))
+        else:
+            organ_data[f'{organ.lower()}_bottom_vertebra'] = None
+
+        if last is not None and last < total_slices - 2:
+            organ_data[f'{organ.lower()}_top_vertebra'] = min(vertebrae_slices, key=lambda k: abs(vertebrae_slices[k] - last))
+        else:
+            organ_data[f'{organ.lower()}_top_vertebra'] = None
+
+    summary.append({'scan name': i, **organ_data})
+
+# --- Save results ---
+summary_df = pd.DataFrame(summary)
+summary_df.to_csv(output_csv, index=False)
+print(f"✅ Vertebrae-organ proximity summary saved to:\n{output_csv}")
+
+# --- Plotting function ---
+def plot_vertebrae_distribution(organ, df, ordered_vertebrae, output_dir):
+    bottom_col = f'{organ}_bottom_vertebra'
+    top_col = f'{organ}_top_vertebra'
+
+    # Count vertebrae appearance
+    bottom_counts = df[bottom_col].dropna().value_counts().reindex(ordered_vertebrae, fill_value=0)
+    top_counts = df[top_col].dropna().value_counts().reindex(ordered_vertebrae, fill_value=0)
+
+    # Plot
+    x = range(len(ordered_vertebrae))
+    width = 0.4
+
+    plt.figure(figsize=(12, 5))
+    plt.bar(x, bottom_counts, width=width, label='Inferior (Bottom) Vertebrae', align='center')
+    plt.bar([xi + width for xi in x], top_counts, width=width, label='Superior (Top) Vertebrae', align='center')
+
+    plt.xticks([xi + width / 2 for xi in x], ordered_vertebrae, rotation=90)
+    plt.xlabel('Vertebra')
+    plt.ylabel('Frequency')
+    plt.title(f'{organ.capitalize()} - Vertebral Association')
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # Save to file
+    output_path = os.path.join(output_dir, f'{organ}_vertebrae_distribution.png')
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
+# Load and plot + save
+df = pd.read_csv(output_csv)
+for organ in ['stomach', 'spleen', 'liver', 'esophagus']:
+    plot_vertebrae_distribution(organ, df, vertebrae_labels, histogram_dir)
+
+print("✅ All histograms saved as PNGs.")
