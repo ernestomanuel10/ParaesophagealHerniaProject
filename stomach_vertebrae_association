@@ -1,9 +1,4 @@
-# --- install packages ---
-
-!pip install TotalSegmentator
-!pip install simpleitk pyradiomics xlsxwriter pandas openpyxl matplotlib
-
-# --- import ---
+## --- import ---
 
 import numpy as np
 import pandas as pd
