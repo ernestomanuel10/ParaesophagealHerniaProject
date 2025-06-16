@@ -1,0 +1,116 @@
+import os
+import logging
+import pandas as pd
+import SimpleITK as sitk
+from radiomics import featureextractor
+
+# Suppress PyRadiomics warnings
+logging.getLogger("radiomics").setLevel(logging.ERROR)
+
+#Create a list of labels and features you want to extract
+#if 'None', extract all labels or features
+
+selected_labels = None
+#selected_labels = [5, 15]
+
+selected_features = None
+#selected_features = {'shape': ['Flatness', 'Elongation'], 'firstorder': ['Kurtosis']}
+
+
+def extract_features(image_path, mask_path, selected_labels, selected_features):
+    """Extract shape and first-order features for specific or all non-zero labels."""
+    image = sitk.ReadImage(image_path)
+    mask = sitk.ReadImage(mask_path)
+    mask.CopyInformation(image)
+
+    extractor = featureextractor.RadiomicsFeatureExtractor()
+    extractor.disableAllFeatures()
+
+    # --- Feature selection ---
+    if selected_features is None:
+        extractor.enableFeatureClassByName('shape')
+        extractor.enableFeatureClassByName('firstorder')
+    else:
+        extractor.enableFeaturesByName(selected_features)
+
+
+    label_array = sitk.GetArrayFromImage(mask)
+    all_labels = set(label_array.flatten()) - {0}  # Exclude background
+
+    # --- Resolve selected labels ---
+    if selected_labels is None:
+        labels_to_process = all_labels
+    else:
+        if not isinstance(selected_labels, (list, set, tuple)):
+            selected_labels = [selected_labels]
+
+        resolved = []
+        for item in selected_labels:
+            if isinstance(item, str):
+                label_value = LABELS.get(item)
+            else:
+                label_value = item
+            if label_value in all_labels:
+                resolved.append(label_value)
+            else:
+                print(f"⚠️ Label '{item}' not found in {os.path.basename(mask_path)}")
+        labels_to_process = resolved
+
+    
+    #extract feature items
+    records = []
+    for label in labels_to_process:
+        try:
+            features = extractor.execute(image, mask, label=int(label))
+        except Exception as e:
+            print(f"Label {label} failed in {os.path.basename(image_path)}: {e}")
+            continue
+
+        for key, value in features.items():
+            if key.startswith('original_shape_'):
+                feature_type = 'shape'
+                feature_name = key.replace('original_shape_', '')
+            elif key.startswith('original_firstorder_'):
+                feature_type = 'intensity'
+                feature_name = key.replace('original_firstorder_', '')
+            else:
+                continue
+
+            records.append({
+                'label': label,
+                'feature_type': feature_type,
+                'feature_name': feature_name,
+                'value': value
+            })
+
+    return pd.DataFrame(records)
+
+# --- Paths ---
+ct_dir = '/content/drive/MyDrive/CT/'
+seg_dir = '/content/drive/MyDrive/seg/'
+output_excel = '/content/drive/MyDrive/radiomics_features_all_scans.xlsx'
+
+#recommended: create a function tailored to your computer to organize the CT scans and segmentations into folders
+#note: the following command assumes that CT scan and segmentation have the same name
+
+# --- Write features for all matched CT/mask files ---
+with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+    for file in os.listdir(ct_dir):
+        if not file.endswith('.nii.gz'):
+            continue
+        base_name = file.replace('.nii.gz', '')
+        ct_path = os.path.join(ct_dir, file)
+        seg_path = os.path.join(seg_dir, f'{base_name}.nii')
+
+        if not os.path.exists(seg_path):
+            print(f'Segmentation not found for {base_name}, skipping.')
+            continue
+
+        print(f'Processing {base_name}...')
+        try:
+            df = extract_features(ct_path, seg_path, selected_labels, selected_features)
+            df.to_excel(writer, sheet_name=base_name[:31], index=False)  # Excel limits sheet name to 31 chars
+        except Exception as e:
+            print(f'Error processing {base_name}: {e}')
+
+print(f"✅ All features saved to: {output_excel}")
