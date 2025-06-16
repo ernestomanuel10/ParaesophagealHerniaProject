@@ -7,6 +7,15 @@ from radiomics import featureextractor
 # Suppress PyRadiomics warnings
 logging.getLogger("radiomics").setLevel(logging.ERROR)
 
+#input directory for CT scans
+CT_dir = "/content/drive/MyDrive/CT/"
+
+#inpur directory for segmentations
+seg_dir = "/content/drive/MyDrive/seg/"
+
+#output path for excel file
+output_excel = '/content/drive/MyDrive/features.xlsx'
+
 #Create a list of labels and features you want to extract
 #if 'None', extract all labels or features
 
@@ -16,7 +25,7 @@ selected_labels = None
 selected_features = None
 #selected_features = {'shape': ['Flatness', 'Elongation'], 'firstorder': ['Kurtosis']}
 
-
+logging.getLogger("radiomics").setLevel(logging.ERROR)
 def extract_features(image_path, mask_path, selected_labels, selected_features):
     """Extract shape and first-order features for specific or all non-zero labels."""
     image = sitk.ReadImage(image_path)
@@ -85,10 +94,6 @@ def extract_features(image_path, mask_path, selected_labels, selected_features):
 
     return pd.DataFrame(records)
 
-# --- Paths ---
-ct_dir = '/content/drive/MyDrive/CT/'
-seg_dir = '/content/drive/MyDrive/seg/'
-output_excel = '/content/drive/MyDrive/radiomics_features_all_scans.xlsx'
 
 #recommended: create a function tailored to your computer to organize the CT scans and segmentations into folders
 #note: the following command assumes that CT scan and segmentation have the same name
