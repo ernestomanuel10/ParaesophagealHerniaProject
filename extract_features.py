@@ -4,118 +4,142 @@ import pandas as pd
 import SimpleITK as sitk
 from radiomics import featureextractor
 
-# Suppress PyRadiomics warnings
+# Suppress warnings from PyRadiomics
 logging.getLogger("radiomics").setLevel(logging.ERROR)
 
-#input directory for CT scans
-CT_dir = "/content/drive/MyDrive/CT/"
 
-#inpur directory for segmentations
-seg_dir = "/content/drive/MyDrive/seg/"
+class RadiomicsFeatureExtractor:
+    def __init__(self, ct_dir, seg_dir, output_excel, selected_labels=None, selected_features=None):
+        """
+        Initialize the feature extractor object.
 
-#output path for excel file
-output_excel = '/content/drive/MyDrive/features.xlsx'
+        Args:
+            ct_dir (str): Directory containing CT images.
+            seg_dir (str): Directory containing corresponding segmentation masks.
+            output_excel (str): Path to save the output Excel file.
+            selected_labels (list or None): Labels to extract features for (or None for all).
+            selected_features (dict or None): Dict of features to extract, or None for all shape + first-order.
+        """
+        self.ct_dir = ct_dir
+        self.seg_dir = seg_dir
+        self.output_excel = output_excel
+        self.selected_labels = selected_labels
+        self.selected_features = selected_features
+        self.extractor = self._initialize_extractor()
 
-#Create a list of labels and features you want to extract
-#if 'None', extract all labels or features
+    def _initialize_extractor(self):
+        """
+        Configure the radiomics extractor with specified feature classes.
+        """
+        extractor = featureextractor.RadiomicsFeatureExtractor()
+        extractor.disableAllFeatures()
 
-selected_labels = None
-#selected_labels = [5, 15]
+        if self.selected_features is None:
+            extractor.enableFeatureClassByName('shape')
+            extractor.enableFeatureClassByName('firstorder')
+        else:
+            extractor.enableFeaturesByName(self.selected_features)
 
-selected_features = None
-#selected_features = {'shape': ['Flatness', 'Elongation'], 'firstorder': ['Kurtosis']}
+        return extractor
 
-logging.getLogger("radiomics").setLevel(logging.ERROR)
-def extract_features(image_path, mask_path, selected_labels, selected_features):
-    """Extract shape and first-order features for specific or all non-zero labels."""
-    image = sitk.ReadImage(image_path)
-    mask = sitk.ReadImage(mask_path)
-    mask.CopyInformation(image)
+    def _get_labels_to_process(self, mask):
+        """
+        Determine which labels in the mask to extract features from.
 
-    extractor = featureextractor.RadiomicsFeatureExtractor()
-    extractor.disableAllFeatures()
+        Args:
+            mask (SimpleITK.Image): The segmentation mask image.
 
-    # --- Feature selection ---
-    if selected_features is None:
-        extractor.enableFeatureClassByName('shape')
-        extractor.enableFeatureClassByName('firstorder')
-    else:
-        extractor.enableFeaturesByName(selected_features)
+        Returns:
+            list of int: List of label values to process.
+        """
+        label_array = sitk.GetArrayFromImage(mask)
+        all_labels = set(label_array.flatten()) - {0}  # exclude background
 
+        if self.selected_labels is None:
+            return list(all_labels)
+        else:
+            return [label for label in self.selected_labels if label in all_labels]
 
-    label_array = sitk.GetArrayFromImage(mask)
-    all_labels = set(label_array.flatten()) - {0}  # Exclude background
+    def extract_features(self, image_path, mask_path):
+        """
+        Extract features from one CT/mask pair.
 
-    # --- Resolve selected labels ---
-    if selected_labels is None:
-        labels_to_process = all_labels
-    else:
-        if not isinstance(selected_labels, (list, set, tuple)):
-            selected_labels = [selected_labels]
+        Args:
+            image_path (str): Path to CT image.
+            mask_path (str): Path to segmentation mask.
 
-        resolved = []
-        for item in selected_labels:
-            if isinstance(item, str):
-                label_value = LABELS.get(item)
-            else:
-                label_value = item
-            if label_value in all_labels:
-                resolved.append(label_value)
-            else:
-                print(f"⚠️ Label '{item}' not found in {os.path.basename(mask_path)}")
-        labels_to_process = resolved
+        Returns:
+            pd.DataFrame: Extracted features for each label.
+        """
+        image = sitk.ReadImage(image_path)
+        mask = sitk.ReadImage(mask_path)
+        mask.CopyInformation(image)
 
-    
-    #extract feature items
-    records = []
-    for label in labels_to_process:
-        try:
-            features = extractor.execute(image, mask, label=int(label))
-        except Exception as e:
-            print(f"Label {label} failed in {os.path.basename(image_path)}: {e}")
-            continue
+        records = []
 
-        for key, value in features.items():
-            if key.startswith('original_shape_'):
-                feature_type = 'shape'
-                feature_name = key.replace('original_shape_', '')
-            elif key.startswith('original_firstorder_'):
-                feature_type = 'intensity'
-                feature_name = key.replace('original_firstorder_', '')
-            else:
+        labels_to_process = self._get_labels_to_process(mask)
+        for label in labels_to_process:
+            try:
+                features = self.extractor.execute(image, mask, label=label)
+            except Exception as e:
+                print(f"❌ Failed to extract label {label} from {os.path.basename(image_path)}: {e}")
                 continue
 
-            records.append({
-                'label': label,
-                'feature_type': feature_type,
-                'feature_name': feature_name,
-                'value': value
-            })
+            for key, value in features.items():
+                if key.startswith('original_shape_'):
+                    feature_type = 'shape'
+                    feature_name = key.replace('original_shape_', '')
+                elif key.startswith('original_firstorder_'):
+                    feature_type = 'intensity'
+                    feature_name = key.replace('original_firstorder_', '')
+                else:
+                    continue  # skip other feature types
 
-    return pd.DataFrame(records)
+                records.append({
+                    'label': label,
+                    'feature_type': feature_type,
+                    'feature_name': feature_name,
+                    'value': value
+                })
+
+        return pd.DataFrame(records)
+
+    def run(self):
+        """
+        Process all CT and segmentation pairs and write results to an Excel file.
+        """
+        with pd.ExcelWriter(self.output_excel, engine='xlsxwriter') as writer:
+            for file in os.listdir(self.ct_dir):
+                if not file.endswith('.nii.gz'):
+                    continue
+
+                base_name = file.replace('.nii.gz', '')
+                ct_path = os.path.join(self.ct_dir, file)
+                seg_path = os.path.join(self.seg_dir, f'{base_name}.nii')
+
+                if not os.path.exists(seg_path):
+                    print(f"⚠️ Segmentation not found for {base_name}, skipping.")
+                    continue
+
+                print(f"🔍 Processing {base_name}...")
+                try:
+                    df = self.extract_features(ct_path, seg_path)
+                    sheet_name = base_name[:31]  # Excel sheet name limit
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+                except Exception as e:
+                    print(f"❌ Error processing {base_name}: {e}")
+
+        print(f"✅ All features saved to: {self.output_excel}")
 
 
-#recommended: create a function tailored to your computer to organize the CT scans and segmentations into folders
-#note: the following command assumes that CT scan and segmentation have the same name
 
-# --- Write features for all matched CT/mask files ---
-with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-    for file in os.listdir(ct_dir):
-        if not file.endswith('.nii.gz'):
-            continue
-        base_name = file.replace('.nii.gz', '')
-        ct_path = os.path.join(ct_dir, file)
-        seg_path = os.path.join(seg_dir, f'{base_name}.nii')
-
-        if not os.path.exists(seg_path):
-            print(f'Segmentation not found for {base_name}, skipping.')
-            continue
-
-        print(f'Processing {base_name}...')
-        try:
-            df = extract_features(ct_path, seg_path, selected_labels, selected_features)
-            df.to_excel(writer, sheet_name=base_name[:31], index=False)  # Excel limits sheet name to 31 chars
-        except Exception as e:
-            print(f'Error processing {base_name}: {e}')
-
-print(f"✅ All features saved to: {output_excel}")
+###         --- EXECUTE CODE ---        ##
+if __name__ == "__main__":
+    extractor = RadiomicsFeatureExtractor(
+        ct_dir="/content/drive/MyDrive/CT/",
+        seg_dir="/content/drive/MyDrive/seg/",
+        output_excel="/content/drive/MyDrive/features.xlsx",
+        selected_labels=None,  # or [5, 15] for liver and esophagus
+        selected_features=None  # or {'shape': ['Elongation'], 'firstorder': ['Kurtosis']}
+    )
+    extractor.run()
