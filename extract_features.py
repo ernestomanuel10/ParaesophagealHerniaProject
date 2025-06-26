@@ -103,6 +103,8 @@ class RadiomicsFeatureExtractor:
 
 ### --- EXECUTE CODE --- ###
 if __name__ == "__main__":
+
+    # Create list of CT and matching segmentations
     ct_list = ["/content/drive/MyDrive/CT/CT1.nii.gz", "/content/drive/MyDrive/CT/CT2.nii.gz"]
     seg_list = ["/content/drive/MyDrive/seg/CT1.nii.gz", "/content/drive/MyDrive/seg/CT2.nii.gz"]
 
